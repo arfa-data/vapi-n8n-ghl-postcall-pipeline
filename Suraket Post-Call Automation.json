@@ -1,0 +1,247 @@
+{
+  "name": "Suraket Post-Call Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// Deduplicate by Vapi call ID so the same end-of-call report\n// is never processed twice (e.g. Vapi retries, or a manual re-send).\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.seenCallIds) staticData.seenCallIds = [];\n\nconst callId = $input.first().json.body?.message?.call?.id\n            || $input.first().json.body?.call?.id\n            || null;\n\nif (!callId) {\n  // No call id present - let it through but flag it, so it is not silently dropped.\n  return [{ json: { ...$input.first().json, _dedupe: 'no-call-id' } }];\n}\n\nif (staticData.seenCallIds.includes(callId)) {\n  // Already processed this call - stop here.\n  return [];\n}\n\nstaticData.seenCallIds.push(callId);\n// Keep the list from growing forever.\nif (staticData.seenCallIds.length > 5000) {\n  staticData.seenCallIds = staticData.seenCallIds.slice(-2000);\n}\n\nreturn [{ json: { ...$input.first().json, _dedupe: 'new' } }];"
+      },
+      "id": "3f73dc91-9ec7-43de-bf00-198528f7fb37",
+      "name": "Dedupe by Call ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -112,
+        704
+      ],
+      "notes": "Stops the same call event being processed twice. Uses n8n's workflow static data (persists between executions) to remember call IDs already handled."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ ($json.body?.message?.transcript || $json.body?.message?.analysis?.summary || '').toLowerCase() }}",
+              "rightValue": "not interested",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ ($json.body?.message?.transcript || $json.body?.message?.analysis?.summary || '').toLowerCase() }}",
+              "rightValue": "no thanks",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "c3",
+              "leftValue": "={{ ($json.body?.message?.transcript || $json.body?.message?.analysis?.summary || '').toLowerCase() }}",
+              "rightValue": "stop calling",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "c4",
+              "leftValue": "={{ ($json.body?.message?.transcript || $json.body?.message?.analysis?.summary || '').toLowerCase() }}",
+              "rightValue": "remove me",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "c5",
+              "leftValue": "={{ ($json.body?.message?.transcript || $json.body?.message?.analysis?.summary || '').toLowerCase() }}",
+              "rightValue": "unsubscribe",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "c6",
+              "leftValue": "={{ ($json.body?.message?.transcript || $json.body?.message?.analysis?.summary || '').toLowerCase() }}",
+              "rightValue": "don't call",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "21579e05-7d0c-4420-9b9c-840f9e781be6",
+      "name": "If - Opt-out phrase detected",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        336,
+        704
+      ],
+      "notes": "Broadened from a single-phrase match to several common opt-out phrases (OR). Still a keyword match, not true intent detection - the report and interview note this as the known limitation and the next step (Vapi structured analysis output or a small classification prompt)."
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "vapi-post-call",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "f98fddfe-a5e5-43b8-bca0-b5f5a2dad222",
+      "name": "webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -304,
+        704
+      ],
+      "webhookId": "c9fcd88b-4d09-42e9-b4fc-3c599d937efa",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "rpqBRAJnPmsSeVnq",
+          "name": "Header Auth account 2"
+        }
+      },
+      "notes": "Authentication set to Header Auth. Create a credential in n8n with header name 'x-vapi-secret' and a value matching the secret set on the Vapi assistant's server config. Vapi sends this header on every request; a mismatched or missing header is now rejected by n8n before the workflow runs."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.body.message.type }}",
+              "value2": "end-of-call-report"
+            }
+          ]
+        }
+      },
+      "id": "2aac20a8-8f59-4062-bba4-64f4fd015559",
+      "name": "Filter",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [
+        112,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/hooks/9HRr2ldzNFIhYxyfFjRB/webhook-trigger/a0923087-585f-4286-8931-3d176627f0f1",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"leadId\": \"{{ $json.body?.message?.call?.metadata?.leadId || 'unknown' }}\",\n  \"name\": \"{{ $json.body?.message?.customer?.name || $json.body?.message?.call?.customer?.name || 'Unknown caller (see callId)' }}\",\n  \"email\": \"{{ $json.body?.message?.customer?.email || '' }}\",\n  \"phone\": \"{{ $json.body?.message?.customer?.number || $json.body?.message?.call?.customer?.number || '' }}\",\n  \"callId\": \"{{ $json.body?.message?.call?.id || '' }}\",\n  \"tags\": [\"interested\"],\n  \"call_summary\": \"{{ $json.body?.message?.analysis?.summary || $json.body?.message?.transcript || 'No summary returned by Vapi.' }}\"\n}",
+        "options": {}
+      },
+      "id": "a9b87f1a-b839-4520-a008-042690353f5e",
+      "name": "Add Interested Tag to GHL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        576,
+        576
+      ],
+      "notes": "Now pulls the caller's real name/email/phone/callId from the Vapi payload instead of a hard-coded contact. On a web test call these fields are often empty, so it falls back to 'Unknown caller (see callId)' rather than a real person's name. leadId is read from call metadata - set this when the outbound call is launched from GHL so the report can match the call back to L01-L05."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://services.leadconnectorhq.com/hooks/9HRr2ldzNFIhYxyfFjRB/webhook-trigger/a0923087-585f-4286-8931-3d176627f0f1",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"leadId\": \"{{ $json.body?.message?.call?.metadata?.leadId || 'unknown' }}\",\n  \"name\": \"{{ $json.body?.message?.customer?.name || $json.body?.message?.call?.customer?.name || 'Unknown caller (see callId)' }}\",\n  \"email\": \"{{ $json.body?.message?.customer?.email || '' }}\",\n  \"phone\": \"{{ $json.body?.message?.customer?.number || $json.body?.message?.call?.customer?.number || '' }}\",\n  \"callId\": \"{{ $json.body?.message?.call?.id || '' }}\",\n  \"tags\": [\"opted-out\", \"vapi-called\", \"suraket-assessment\"],\n  \"call_summary\": \"{{ $json.body?.message?.analysis?.summary || $json.body?.message?.transcript || 'Lead requested to opt out during call.' }}\"\n}",
+        "options": {}
+      },
+      "id": "204fe60c-f567-4b2d-8019-1da2e68795bf",
+      "name": "Add Opted Out Tag to GHL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [
+        592,
+        800
+      ],
+      "notes": "Same dynamic-field approach as the interested branch, using real call data where Vapi provides it."
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Dedupe by Call ID": {
+      "main": [
+        [
+          {
+            "node": "Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If - Opt-out phrase detected": {
+      "main": [
+        [
+          {
+            "node": "Add Opted Out Tag to GHL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add Interested Tag to GHL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "webhook": {
+      "main": [
+        [
+          {
+            "node": "Dedupe by Call ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter": {
+      "main": [
+        [
+          {
+            "node": "If - Opt-out phrase detected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "fbfbdf83-cf4b-4447-afda-7b95ba46d2f6",
+  "meta": {
+    "instanceId": "f066294a02d4fcadcfa9d942a1c2c1c97c8cb5b36f6debb2575749165dd18a18"
+  },
+  "nodeGroups": [],
+  "id": "fFvVjpoTDBIsEjk0",
+  "tags": []
+}
